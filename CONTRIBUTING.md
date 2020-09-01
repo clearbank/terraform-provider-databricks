@@ -10,10 +10,10 @@ Contributing to Databricks Terraform Provider
 - [Code conventions](#code-conventions)
 - [Linting](#linting)
 - [Unit testing resources](#unit-testing-resources)
+- [Generating asserts for the first time in test](#generating-asserts-for-the-first-time-in-test)
+- [Random naming anywhere](#random-naming-anywhere)
 - [Integration Testing](#integration-testing)
-- [Project Components](#project-components)
-	- [Databricks Terraform Provider Resources State](#databricks-terraform-provider-resources-state)
-	- [Databricks Terraform Data Sources State](#databricks-terraform-data-sources-state)
+- [Pre-release procedure](#pre-release-procedure)
 
 We happily welcome contributions to databricks-terraform. We use GitHub Issues to track community reported issues and GitHub Pull Requests for accepting changes.
 
@@ -29,7 +29,18 @@ cd terraform-provider-databricks
 make install
 ```
 
-Now your plugin for the Databricks Terraform provider is installed correctly. You can actually use the provider. 
+Now your plugin for the Databricks Terraform provider is installed correctly. If you have Terraform 0.13, you'd need to paste configuration that might look like the following one into your `main.tf`:
+
+```hcl
+terraform {
+  required_providers {
+    databricks = {
+      source = "databrickslabs/databricks"
+      version = "0.2.3-22-gd91b475"
+    }
+  }
+}
+```
 
 ## Developing provider
 
@@ -87,11 +98,18 @@ $ docker run -it -v $(pwd):/workpace -w /workpace databricks-terraform apply
 
 ## Testing
 
-* [ ] Integration tests should be run at a client level against both azure and aws to maintain sdk parity against both apis **(currently only on one cloud)**
-* [x] Terraform acceptance tests should be run against both aws and azure to maintain parity of provider between both cloud services **(currently only on one cloud)**
+* [Integration tests](scripts/README.md) should be run at a client level against both azure and aws to maintain sdk parity against both apis.
+* Terraform acceptance tests should be run against both aws and azure to maintain parity of provider between both cloud services
+* Consider test functions as scenarios, that you are debugging from IDE when specific issues arise. Test tables are discouraged. Single-use functions in tests are discouraged, unless resource definitions they make are longer than 80 lines.
+* All tests should be capable of repeatedly running on "dirty" environment, which means not requiring a new clean environment every time the test runs.
+* All tests should re-use compute resources whenever possible.
 
 ## Code conventions
 
+* Files should not be larger than 600 lines
+* Single function should fit to be seen on 13" screen: no more than 40 lines of code. Only exception to this rule is `*_test.go` files. 
+* There should be no unnecessary package exports: no structs & types with leading capital letter, unless they are of value outside of the package.
+* `fmt.Sprintf` with more than 4 placeholders is considered too complex to maintain. Should be avoided at all cost. Use `qa.EnvironmentTemplate(t, "This is {env.DATABRICKS_HOST} with {var.RANDOM} name.")` instead
 * Import statements should all be first ordered by "GoLang internal", "Vendor packages" and then "current provider packages". Within those sections imports must follow alphabetical order.
 
 ## Linting
@@ -101,18 +119,28 @@ So please run `make lint` instead.
 
 ## Unit testing resources
 
+Eventually, all of resources would be automatically checked for a unit test presence. `TestGenerateTestCodeStubs` is going to fail, when resource has certain test cases missing. Until all existing resources have tests, you can generate stub code, which will be logged to stdout by changing these lines of `generate_test.go` with name of resource you're creating:
+
+```go
+for name, resource := range p.ResourcesMap {
+	if name != "databricks_scim_user" {
+		continue
+	}
+	//...
+```
+
 In order to unit test a resource, which runs fast and could be included in code coverage, one should use `ResourceTester`, that launches embedded HTTP server with `HTTPFixture`'s containing all calls that should have been made in given scenario. Some may argue that this is not a pure unit test, because it creates a side effect in form of embedded server, though it's always on different random port, making it possible to execute these tests in parallel. Therefore comments about non-pure unit tests will be ignored, if they use `ResourceTester` helper.
 
 ```go
 func TestPermissionsCreate(t *testing.T) {
-	_, err := ResourceTester(t, []HTTPFixture{
+	_, err := internal.ResourceTester(t, []qa.HTTPFixture{
 		{
             Method:   http.MethodPatch,
             // requires full URI
             Resource: "/api/2.0/preview/permissions/clusters/abc",
             // works with entities, not JSON. Diff is displayed in case of missmatch 
-			ExpectedRequest: model.AccessControlChangeList{
-				AccessControlList: []*model.AccessControlChange{
+			ExpectedRequest: AccessControlChangeList{
+				AccessControlList: []*AccessControlChange{
 					{
 						UserName:        &TestingUser,
 						PermissionLevel: "CAN_USE",
@@ -122,9 +150,9 @@ func TestPermissionsCreate(t *testing.T) {
 		},
 		{
 			Method:   http.MethodGet,
-			Resource: "/api/2.0/preview/permissions/clusters/abc?",
-			Response: model.AccessControlChangeList{
-				AccessControlList: []*model.AccessControlChange{
+			Resource: "/api/2.0/preview/permissions/clusters/abc",
+			Response: AccessControlChangeList{
+				AccessControlList: []*AccessControlChange{
 					{
 						UserName:        &TestingUser,
 						PermissionLevel: "CAN_MANAGE",
@@ -134,8 +162,8 @@ func TestPermissionsCreate(t *testing.T) {
 		},
 		{
 			Method:   http.MethodGet,
-			Resource: "/api/2.0/preview/scim/v2/Me?",
-			Response: model.User{
+			Resource: "/api/2.0/preview/scim/v2/Me",
+			Response: User{
 				UserName: "chuck.norris",
 			},
 		},
@@ -160,80 +188,27 @@ func TestPermissionsCreate(t *testing.T) {
 
 Each resource should have both unit and integration tests. 
 
+## Generating asserts for the first time in test
+
+```go
+for k, v := range d.State().Attributes {
+	fmt.Printf("assert.Equal(t, %#v, d.Get(%#v))\n", v, k)
+}
+```
+
+## Random naming anywhere
+
+Terraform SDK provides `randomName := acctest.RandStringFromCharSet(10, acctest.CharSetAlphaNum)` for convenient random names generation.
+
 ## Integration Testing
 
 Currently Databricks supports two cloud providers `azure` and `aws` thus integration testing with the correct cloud service provider is 
-crucial for making sure that the provider behaves as expected on all supported clouds. This type of testing separation is being managed via build tags 
-to allow for duplicate method names and environment variables to configure clients. 
+crucial for making sure that the provider behaves as expected on all supported clouds. Please read [dedicated instructions](scripts/README.md) for details.
 
-The current integration test implementation uses `CLOUD_ENV` environment variable and can use the value of `azure` or `aws`. 
-You can execute the acceptance with the following make commands `make terraform-acc-azure`, and `make terraform-acc-aws` for 
-azure and aws respectively. 
+## Pre-release procedure
 
-This involves bootstrapping the provider via a .env configuration file. Without these files in the root directory the tests 
-will fail as the provider will not have a authorized token and host.
-
-The configuration file for `aws` should be like the following and be named `.aws.env`:
-```.env
-DATABRICKS_HOST=<host>
-DATABRICKS_TOKEN=<token>
-```
-
-The configuration file for `azure` should be like the following and be named `.azure.env`:
-```.env
-DATABRICKS_AZURE_CLIENT_ID=<enterprise app client id>
-DATABRICKS_AZURE_CLIENT_SECRET=<enterprise app client secret>
-DATABRICKS_AZURE_TENANT_ID=<azure ad tenant id>
-DATABRICKS_AZURE_SUBSCRIPTION_ID=<azure subscription id>
-DATABRICKS_AZURE_RESOURCE_GROUP=<resource group where the workspace is>
-AZURE_REGION=<region where the workspace is>
-DATABRICKS_AZURE_MANAGED_RESOURCE_GROUP=<azure databricks managed resource group for workspace>
-DATABRICKS_AZURE_WORKSPACE_NAME=<azure databricks workspace name>
-```
-
-Note that azure integration tests will use service principal based auth. Even though it is using a service principal, 
-it will still be generating a personal access token to perform creation of resources. 
-
-## Project Components
-
-### Databricks Terraform Provider Resources State
-
-| Resource                         | Implemented        | Import Support       | Acceptance Tests     | Documentation        | Reviewed             | Finalize Schema      |
-|----------------------------------|--------------------|----------------------|----------------------|----------------------|----------------------|----------------------|
-| databricks_token                 | :white_check_mark: | :white_large_square: | :white_check_mark:   | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_secret_scope          | :white_check_mark: | :white_large_square: | :white_check_mark:   | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_secret                | :white_check_mark: | :white_large_square: | :white_check_mark:   | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_secret_acl            | :white_check_mark: | :white_large_square: | :white_check_mark:   | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_instance_pool         | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_scim_user             | :white_check_mark: | :white_large_square: | :white_check_mark:   | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_scim_group            | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_notebook              | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_cluster               | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_job                   | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_dbfs_file             | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_dbfs_file_sync        | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_instance_profile      | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_aws_s3_mount          | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_azure_blob_mount      | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_azure_adls_gen1_mount | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-| databricks_azure_adls_gen2_mount | :white_check_mark: | :white_large_square: | :white_large_square: | :white_check_mark:   | :white_large_square: | :white_large_square: |
-
-### Databricks Terraform Data Sources State
-
-| Data Source                 | Implemented          | Acceptance Tests     | Documentation        | Reviewed             |
-|-----------------------------|----------------------|----------------------|----------------------|----------------------|
-| databricks_notebook         | :white_check_mark:   | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_notebook_paths   | :white_check_mark:   | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_dbfs_file        | :white_check_mark:   | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_dbfs_file_paths  | :white_check_mark:   | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_zones            | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_runtimes         | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_instance_pool    | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_scim_user        | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_scim_group       | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_cluster          | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_job              | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_mount            | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_instance_profile | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_database         | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
-| databricks_table            | :white_large_square: | :white_large_square: | :white_large_square: | :white_large_square: |
+1. `make test-azure` 
+2. `make test-mws` if MWS related code changed given release.
+3. Create release notes.
+4. Perfrom backwards-compatibility checks and make proper notes. 
+5. 
